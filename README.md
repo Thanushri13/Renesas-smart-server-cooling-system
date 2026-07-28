@@ -1,5 +1,4 @@
-# Renesas-smart-server-cooling-system 
-# Smart Server Rack Cooling System
+# Renesas-smart-server-cooling-system - Smart Server Rack Cooling System
 Smart Server Cooling System using Renesas BGK-RA6E2, BLE, Temperature/Humidity Sensor, and PWM-based Fan Control.
 A temperature-based smart cooling system developed using the **Renesas RA6E2** microcontroller. The system monitors temperature and humidity using the **HS4001 sensor** and automatically controls a cooling fan using **PWM**.
 
