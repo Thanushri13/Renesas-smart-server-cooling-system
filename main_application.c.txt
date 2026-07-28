@@ -1,0 +1,190 @@
+/*
+* Copyright (c) 2020 - 2024 Renesas Electronics Corporation and/or its affiliates
+*
+* SPDX-License-Identifier:  BSD-3-Clause
+*/
+#include <stdio.h>
+#include "common_utils.h"
+#include "sm.h"
+#include "main_application.h"
+#include "ble_app.h"
+#include "gpt_timer.h"       
+
+#include "log_disabled.h"    // Debugging completely disabled
+
+/* ================= TEMPERATURE-BASED LED CONTROL CONFIG ================= */
+#define TEMP_THRESHOLD_CELSIUS      26.0f  
+#define LED_ON_DUTY_CYCLE           100    // 100% brightness above threshold
+#define LED_OFF_DUTY_CYCLE          0      // 0% brightness (OFF) below threshold
+/* =========================================================================== */
+
+#define EXT_LED    BSP_IO_PORT_01_PIN_05    // External LED: P105
+#define EXT_LED2   BSP_IO_PORT_00_PIN_08    // External LED: P008
+#define EXT_LED3   BSP_IO_PORT_00_PIN_06    // External LED: P006
+#define LED2  BSP_IO_PORT_01_PIN_12
+
+void app_init(void);
+void app_run(void);
+static void control_LEDs_by_temperature(void);
+static float get_current_temperature_celsius(void);
+static void control_fan_by_temperature(void);
+
+fsp_err_t main_application(void) {
+    fsp_err_t status = FSP_SUCCESS;
+    static uint8_t state;
+
+    while (true) {
+        switch (state) {
+            case 0:
+                app_init();
+                state = 1;
+                break;
+            case 1:
+                app_run();
+                break;
+        }
+    }
+    return status;
+}
+
+#if defined(ENABLE_LED1) && defined(ENABLE_PWM_LED1)
+void enable_Led1_PWM(void)
+{
+    fsp_err_t err = FSP_SUCCESS;
+    err = init_gpt_timer(&g_led_timer_ctrl, &g_led_timer_cfg);
+    if (FSP_SUCCESS != err) return;
+
+    err = start_gpt_timer(&g_led_timer_ctrl);
+    if (FSP_SUCCESS != err) { deinit_gpt_timer(&g_led_timer_ctrl);
+     return; }
+
+    set_timer_Period_and_Dutycycle(LED1_DEFAULT_PERIOD, LED_OFF_DUTY_CYCLE, &g_led_timer_ctrl);
+}
+#endif
+
+#if defined(ENABLE_LED2) && defined(ENABLE_PWM_LED2)
+void enable_Led2_PWM(void)
+{
+    fsp_err_t err = FSP_SUCCESS;
+    err = init_gpt_timer(&g_timer_pwm_led2_ctrl, &g_timer_pwm_led2_cfg);
+    if (FSP_SUCCESS != err) 
+    return;
+
+    err = start_gpt_timer(&g_timer_pwm_led2_ctrl);
+    if (FSP_SUCCESS != err) { deinit_gpt_timer(&g_timer_pwm_led2_ctrl); 
+    return; }
+
+    set_timer_Period_and_Dutycycle(LED2_DEFAULT_PERIOD, LED_OFF_DUTY_CYCLE, &g_timer_pwm_led2_ctrl);
+}
+#endif
+
+void app_init(void) {
+    sm_init();
+    ble_app_init();
+
+#if defined(ENABLE_LED1) && defined(ENABLE_PWM_LED1)
+    enable_Led1_PWM();
+#endif
+#if defined(ENABLE_LED2) && defined(ENABLE_PWM_LED2)
+    enable_Led2_PWM();
+#endif
+}
+
+static float current_temperature = 0.0f;
+
+void app_run(void)
+{
+    // These must run completely unhindered to process background sensor & BLE events
+    sm_run();
+    ble_app_run();
+
+    static uint32_t loop_counter = 0;
+    if (loop_counter++ >= 5000000) 
+    {
+        loop_counter = 0; 
+
+        sm_handle temp_handle = INVALID_HANDLE_INIT;
+        uint16_t index = 0;
+        int32_t temp = 0;
+
+        if (sm_get_sensor_handle(TEMPERATURE, &temp_handle, &index) == SM_OK)
+        {
+            if (sm_read_sensor(temp_handle, &temp) == SM_SENSOR_DATA_VALID)
+            {
+                current_temperature = (float)temp / 100.0f;
+                
+                // Optional BLE hookup
+                // ble_app_update_temperature(current_temperature);
+            }
+        }
+
+        control_LEDs_by_temperature();
+        control_fan_by_temperature();
+    }
+}
+
+static void control_LEDs_by_temperature(void)
+{
+    float temperature_c = get_current_temperature_celsius();
+    
+    // Static variable to track the previous state of the LEDs
+    static uint8_t last_applied_duty = 0xFF; 
+
+    uint8_t desired_duty = (temperature_c >= TEMP_THRESHOLD_CELSIUS)
+                            ? LED_ON_DUTY_CYCLE
+                            : LED_OFF_DUTY_CYCLE;
+
+    // Only update hardware registers if the temperature actually crossed the threshold boundary
+    if (desired_duty != last_applied_duty)
+    {
+        last_applied_duty = desired_duty;
+
+        if (desired_duty == LED_ON_DUTY_CYCLE)
+        {
+            utils_set_LED(EXT_LED, LED_ON);
+            utils_set_LED(EXT_LED2, LED_ON);
+            utils_set_LED(EXT_LED3, LED_ON);
+           
+        }
+        else
+        {
+            utils_set_LED(EXT_LED, LED_OFF);
+            utils_set_LED(EXT_LED2, LED_OFF);
+            utils_set_LED(EXT_LED3, LED_OFF);
+            
+        }
+    }
+}
+static void control_fan_by_temperature(void)
+{
+    float temperature_c = get_current_temperature_celsius();
+
+    static uint8_t last_duty = 0xFF;
+
+    uint8_t duty_percent;
+
+    if (temperature_c <= 26.0f)
+    {
+        duty_percent = 0;
+    }
+    else if (temperature_c >= 40.0f)
+    {
+        duty_percent = 100;
+    }
+    else
+    {
+        duty_percent = (uint8_t)
+            (((temperature_c - 26.0f) * 100.0f) / 14.0f);
+    }
+
+    if (duty_percent != last_duty)
+    {
+        last_duty = duty_percent;
+        set_timer_duty_cycle(duty_percent, &g_timer_pwm_led2_ctrl);
+    }
+}
+
+static float get_current_temperature_celsius(void)
+{
+    return current_temperature;
+}
